@@ -1,0 +1,4 @@
+﻿source_record,status,cleaned_record,changes,review_note
+1,needs_review,1,phone: '7045550182' -> '704-555-0182'; city: 'charlotte' -> 'Charlotte'; state: 'nc' -> 'NC'; email: '' -> 'ridge@example.com'; segment: '' -> 'Roofing',email filled from reference record 1; segment added from reference record 1
+2,needs_review,2,phone: '704.555.0114' -> '704-555-0114'; segment: '' -> 'HVAC',email conflicts with reference record 2; input retained; segment added from reference record 2
+3,needs_review,3,phone: '7045550146' -> '704-555-0146'; city: 'pineville' -> 'Pineville'; state: 'nc' -> 'NC'; email: '' -> 'river@example.com'; segment: '' -> 'Plumbing',email filled from reference record 3; segment added from reference record 3
