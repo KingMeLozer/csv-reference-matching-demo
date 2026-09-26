@@ -120,8 +120,10 @@ stats, out, audit = run("a,b\n1,2\n\n,\n")
 assert stats["blank_records_skipped"] == 2 and stats["output_records"] == 1
 
 # Spreadsheet formula risks stop delivery without changing the source or writing outputs.
-for value in ('=1+1', '+1+1', '-5', '@example.com', '＝1+1', "'=1+1"):
+for value in ('=1+1', '+1+1', '-5+1', '@example.com', '＝1+1', "'=1+1"):
     expect_error(f"business,notes\nA,{value}\n", ValueError)
+stats, out, audit = run("business,balance\nA,-5\nB,+12.5\n")
+assert [row[1] for row in out[1:]] == ["-5", "+12.5"], out
 
 # Malformed input rejected without leaving output behind.
 expect_error("a,b\n1,2,3\n", ValueError)

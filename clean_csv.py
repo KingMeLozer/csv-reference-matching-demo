@@ -10,6 +10,8 @@ from pathlib import Path
 def spreadsheet_formula_risk(value):
     if not value:
         return False
+    if value[0] in "+-" and re.fullmatch(r"[+-](?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", value):
+        return False
     prefixes = "=+-@＝＋－＠"
     return value[0] in prefixes or (value[0] == "'" and len(value) > 1 and value[1] in prefixes)
 
