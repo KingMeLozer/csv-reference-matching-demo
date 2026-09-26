@@ -35,6 +35,7 @@ def expect_error(text, error, **kwargs):
         clean_csv(folder / "in.csv", folder / "out.csv", **kwargs)
     except error:
         assert not (folder / "out.csv").exists(), "partial output left behind"
+        assert not (folder / "out_report.csv").exists(), "partial report left behind"
         return
     raise AssertionError(f"expected {error.__name__}")
 
@@ -53,12 +54,18 @@ stats, out, _ = run("sku,zip,phone\n00123,02134,7045550100\n")
 assert out[1] == ["00123", "02134", "704-555-0100"], out
 
 # Invalid phone kept as-is and flagged.
-stats, out, audit = run("business,phone\nA,555-01\n")
-assert out[1][1] == "555-01" and audit[0]["status"] == "needs_review"
+stats, out, audit = run("business,phone\nA,555-01\nB,call 7045550182\n")
+assert [row[1] for row in out[1:]] == ["555-01", "call 7045550182"], out
+assert all(row["status"] == "needs_review" for row in audit), audit
 
 # Email: domain lowercased; local parts that differ only by case are NOT merged.
 stats, out, audit = run("business,email\nA,Jo@EX.com\nA,jo@ex.com\n")
 assert stats["duplicates_removed"] == 0 and out[1][1] == "Jo@ex.com" and out[2][1] == "jo@ex.com", out
+
+# Malformed nonempty emails remain untouched and require human review.
+stats, out, audit = run("business,email\nA,not-an-email\nC,a@\nD,a b@example.com\n")
+assert [row[1] for row in out[1:]] == ["not-an-email", "a@", "a b@example.com"], out
+assert all(row["status"] == "needs_review" and "Email format" in row["review_note"] for row in audit), audit
 
 # Chosen key columns: conflicting records flagged on both sides, both retained.
 stats, out, audit = run("id,name,price\n7,Widget,10\n7,Widget,12\n8,Gadget,5\n", key_columns=["ID"])
@@ -100,19 +107,37 @@ stats = clean_csv(folder / "in.csv", folder / "out.csv", reference=folder / "ref
 with (folder / "out.csv").open(encoding="utf-8-sig", newline="") as handle:
     assert list(csv.reader(handle))[1][2] == "a@example.com"
 
+# A phone field containing words cannot borrow data from a valid phone key.
+folder = new_folder()
+(folder / "in.csv").write_text("business,phone,email\nA,call 7045550100,\n", encoding="utf-8")
+(folder / "ref.csv").write_text("business,phone,email\nA,7045550100,a@example.com\n", encoding="utf-8")
+clean_csv(folder / "in.csv", folder / "out.csv", reference=folder / "ref.csv")
+with (folder / "out.csv").open(encoding="utf-8-sig", newline="") as handle:
+    assert list(csv.reader(handle))[1][2] == ""
+
 # Blank and all-empty rows skipped and reported.
 stats, out, audit = run("a,b\n1,2\n\n,\n")
 assert stats["blank_records_skipped"] == 2 and stats["output_records"] == 1
 
-# Spreadsheet formula risk flagged, value untouched.
-stats, out, audit = run("business,notes\nA,=HYPERLINK(\"x\")\nB,-5\n")
-assert out[1][1].startswith("=") and audit[0]["status"] == "needs_review" and audit[1]["status"] == "kept"
+# Spreadsheet formula risks stop delivery without changing the source or writing outputs.
+for value in ('=1+1', '+1+1', '-5', '@example.com', '＝1+1', "'=1+1"):
+    expect_error(f"business,notes\nA,{value}\n", ValueError)
 
 # Malformed input rejected without leaving output behind.
 expect_error("a,b\n1,2,3\n", ValueError)
 expect_error('a,b\n"unterminated,2\n', Exception)
 expect_error("a,a\n1,2\n", ValueError)
+expect_error("=1+1,b\nx,y\n", ValueError)
 expect_error("", ValueError)
+
+folder = new_folder()
+(folder / "in.csv").write_text("id,email\n1,\n", encoding="utf-8")
+(folder / "ref.csv").write_text("id,=1+1\n1,x\n", encoding="utf-8")
+try:
+    clean_csv(folder / "in.csv", folder / "out.csv", key_columns=["id"], reference=folder / "ref.csv")
+    raise AssertionError("Formula-like reference header accepted")
+except ValueError:
+    assert not (folder / "out.csv").exists()
 
 # Non-UTF-8 input rejected rather than silently garbled.
 folder = new_folder()
@@ -124,4 +149,4 @@ except UnicodeDecodeError:
     pass
 
 shutil.rmtree(BASE)
-print("PASS: cleanup, reference enrichment, conflicts, quoted fields, Unicode, leading zeroes, phones, formula flags, malformed input")
+print("PASS: cleanup, reference enrichment, conflicts, quoted fields, Unicode, leading zeroes, phones, formula gate, malformed input")

@@ -7,6 +7,13 @@ import re
 from pathlib import Path
 
 
+def spreadsheet_formula_risk(value):
+    if not value:
+        return False
+    prefixes = "=+-@＝＋－＠"
+    return value[0] in prefixes or (value[0] == "'" and len(value) > 1 and value[1] in prefixes)
+
+
 def clean_csv(source, destination, report=None, key_columns=None, reference=None, add_columns=None):
     source, destination = Path(source), Path(destination)
     report = Path(report) if report else destination.with_name(destination.stem + "_report.csv")
@@ -25,6 +32,8 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
     headers = [h.strip() for h in rows[0]]
     if any(not h for h in headers) or len({h.casefold() for h in headers}) != len(headers):
         raise ValueError("Headers must be nonempty and unique")
+    if any(spreadsheet_formula_risk(h) for h in headers):
+        raise ValueError("Header starts with a spreadsheet formula character")
     columns = {h.casefold(): i for i, h in enumerate(headers)}
     if key_columns:
         missing = [h for h in key_columns if h.casefold() not in columns]
@@ -34,10 +43,17 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
     else:
         match_columns = [columns["business"], columns["phone"]] if "business" in columns and "phone" in columns else []
 
+    def phone_digits(value):
+        if not re.fullmatch(r"\+?[0-9().\s-]+", value):
+            return ""
+        digits = re.sub(r"\D", "", value)
+        if len(digits) == 11 and digits.startswith("1"):
+            digits = digits[1:]
+        return digits if len(digits) == 10 else ""
+
     def key_value(value, name):
         if name == "phone":
-            digits = re.sub(r"\D", "", value)
-            return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+            return phone_digits(value)
         return value.casefold() if name == "business" else value
 
     add_columns = add_columns or []
@@ -56,6 +72,8 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
         reference_headers = [h.strip() for h in source_rows[0]]
         if any(not h for h in reference_headers) or len({h.casefold() for h in reference_headers}) != len(reference_headers):
             raise ValueError("Reference headers must be nonempty and unique")
+        if any(spreadsheet_formula_risk(h) for h in reference_headers):
+            raise ValueError("Reference header starts with a spreadsheet formula character")
         reference_columns = {h.casefold(): i for i, h in enumerate(reference_headers)}
         key_names = [headers[i].casefold() for i in match_columns]
         if any(name not in reference_columns for name in key_names):
@@ -83,6 +101,7 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
     output = [output_headers]
     audit = [["source_record", "status", "cleaned_record", "changes", "review_note"]]
     seen, matched = {}, {}
+    formula_risks = []
     duplicates = blanks = changed = reviews = 0
     for source_record, row in enumerate(rows[1:], 1):
         if not row or not any(value.strip() for value in row):
@@ -120,10 +139,8 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
         for name, index in columns.items():
             value = clean[index]
             if name == "phone" and value:
-                digits = re.sub(r"\D", "", value)
-                if len(digits) == 11 and digits.startswith("1"):
-                    digits = digits[1:]
-                if len(digits) == 10:
+                digits = phone_digits(value)
+                if digits:
                     clean[index] = f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
                 else:
                     notes.append("Phone needs review; original retained")
@@ -134,12 +151,11 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
             elif name == "email":
                 if not value:
                     notes.append("Email missing; verify")
-                elif "@" in value:
+                elif value.count("@") != 1 or any(ch.isspace() for ch in value) or not all(value.split("@")):
+                    notes.append("Email format needs review; original retained")
+                else:
                     local, domain = value.rsplit("@", 1)
                     clean[index] = local + "@" + domain.lower()
-        for index, value in enumerate(clean):
-            if value[:1] in "=+@" or (value[:1] == "-" and value[1:2] and not value[1:2].isdigit()):
-                notes.append(f"{output_headers[index]} starts with a spreadsheet formula character; review before opening in Excel")
         before_values = row + [""] * len(extra_headers)
         changes = "; ".join(f"{output_headers[i]}: {before!r} -> {after!r}" for i, (before, after) in enumerate(zip(before_values, clean)) if before != after)
         # Business names compare case-insensitively; email local parts stay case-sensitive
@@ -150,6 +166,7 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
             audit.append([source_record, "duplicate_removed", seen[exact_key], changes, "Same cleaned values as retained record"])
             continue
         seen[exact_key] = len(output)
+        formula_risks.extend((source_record, output_headers[i]) for i, value in enumerate(clean) if spreadsheet_formula_risk(value))
         if match_columns:
             match_key = tuple(key_value(clean[i], headers[i].casefold()) for i in match_columns)
             if all(match_key):
@@ -173,6 +190,10 @@ def clean_csv(source, destination, report=None, key_columns=None, reference=None
                 entry[1] = "needs_review"
                 reviews += 1
             entry[4] = "; ".join(filter(None, [entry[4], note]))
+
+    if formula_risks:
+        locations = ", ".join(f"record {record} / {column}" for record, column in formula_risks[:5])
+        raise ValueError(f"Spreadsheet formula risk in {len(formula_risks)} cell(s): {locations}. No output written; review the source or reference data")
 
     def encode(table):
         buffer = io.StringIO(newline="")
